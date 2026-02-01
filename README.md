@@ -48,15 +48,12 @@ git clone https://github.com/salvadalba/nodaysidle-minimalbrowser.git
 cd nodaysidle-minimalbrowser
 npm install
 
-# Build AppImage or pacman package
+# Build AppImage
 npm run build:linux
 
 # Install AppImage
 chmod +x dist/nodaysidle-*.AppImage
 ./dist/nodaysidle-*.AppImage
-
-# Or install pacman package
-sudo pacman -U dist/nodaysidle-*.pacman
 ```
 
 #### Manual installation

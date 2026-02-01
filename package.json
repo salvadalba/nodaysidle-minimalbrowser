@@ -52,8 +52,7 @@
       "category": "Network",
       "icon": "build/icon.png",
       "target": [
-        "AppImage",
-        "pacman"
+        "AppImage"
       ]
     },
     "win": {
