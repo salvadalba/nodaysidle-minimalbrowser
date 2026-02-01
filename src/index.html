@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>nodaysidle</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Top Bar: Tabs + URL Bar -->
+        <header class="top-bar">
+            <!-- Tab Bar -->
+            <div class="tab-bar" id="tab-bar">
+                <div class="tabs-container" id="tabs-container">
+                    <!-- Tabs will be rendered here dynamically -->
+                </div>
+                <button class="tab-new-btn" id="new-tab-btn" title="New Tab (Ctrl+T)">+</button>
+            </div>
+
+            <!-- Navigation Bar -->
+            <nav class="nav-bar">
+                <div class="nav-controls">
+                    <button class="nav-btn" id="back-btn" title="Go Back" disabled>
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M11 2L5 8l6 6" stroke="currentColor" stroke-width="2" fill="none"/>
+                        </svg>
+                    </button>
+                    <button class="nav-btn" id="forward-btn" title="Go Forward" disabled>
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M5 2l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none"/>
+                        </svg>
+                    </button>
+                    <button class="nav-btn" id="reload-btn" title="Reload">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M13.5 8a5.5 5.5 0 11-1.5-3.8" stroke="currentColor" stroke-width="2" fill="none"/>
+                            <path d="M12 1v4h4" stroke="currentColor" stroke-width="2" fill="none"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- URL Bar with Autocomplete -->
+                <div class="url-bar-container">
+                    <input type="text"
+                           id="url-input"
+                           class="url-input"
+                           placeholder="Search or enter URL"
+                           autocomplete="off"
+                           spellcheck="false">
+                    <div class="autocomplete-dropdown" id="autocomplete-dropdown"></div>
+                </div>
+
+                <div class="toolbar-controls">
+                    <button class="nav-btn" id="sidebar-toggle-btn" title="Toggle Sidebar (Ctrl+B)">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <rect x="1" y="2" width="14" height="12" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                            <line x1="5" y1="2" x2="5" y2="14" stroke="currentColor" stroke-width="1.5"/>
+                        </svg>
+                    </button>
+                    <div class="adblock-status" id="adblock-status" title="Ad Blocker">
+                        <span class="adblock-icon">🛡</span>
+                        <span class="adblock-count" id="adblock-count">0</span>
+                    </div>
+                </div>
+            </nav>
+        </header>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Sidebar -->
+            <aside class="sidebar" id="sidebar">
+                <div class="sidebar-tabs">
+                    <button class="sidebar-tab active" data-panel="bookmarks">Bookmarks</button>
+                    <button class="sidebar-tab" data-panel="history">History</button>
+                </div>
+
+                <!-- Bookmarks Panel -->
+                <div class="sidebar-panel active" id="bookmarks-panel">
+                    <div class="sidebar-header">
+                        <h3>Bookmarks</h3>
+                        <button class="sidebar-action-btn" id="add-bookmark-btn" title="Add Bookmark">+</button>
+                    </div>
+                    <div class="bookmarks-list" id="bookmarks-list">
+                        <!-- Bookmarks will be rendered here -->
+                        <div class="empty-state">No bookmarks yet</div>
+                    </div>
+                </div>
+
+                <!-- History Panel -->
+                <div class="sidebar-panel" id="history-panel">
+                    <div class="sidebar-header">
+                        <h3>History</h3>
+                        <button class="sidebar-action-btn" id="clear-history-btn" title="Clear History">Clear</button>
+                    </div>
+                    <div class="history-search">
+                        <input type="text" id="history-search-input" placeholder="Search history...">
+                    </div>
+                    <div class="history-list" id="history-list">
+                        <!-- History entries will be rendered here -->
+                        <div class="empty-state">No history yet</div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Content Area (BrowserView renders here in Electron) -->
+            <div class="webview-container" id="webview-container">
+                <!-- Welcome Screen (shown when no content loaded) -->
+                <div class="welcome-screen" id="welcome-screen">
+                    <div class="welcome-content">
+                        <h1>nodaysidle</h1>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Toast Notifications Container -->
+        <div class="toast-container" id="toast-container"></div>
+
+        <!-- Add Bookmark Modal -->
+        <div class="modal" id="add-bookmark-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Add Bookmark</h3>
+                    <button class="modal-close" id="modal-close">&times;</button>
+                </div>
+                <form id="add-bookmark-form">
+                    <div class="form-group">
+                        <label for="bookmark-title">Title</label>
+                        <input type="text" id="bookmark-title" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="bookmark-url">URL</label>
+                        <input type="url" id="bookmark-url" required>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-secondary" id="bookmark-cancel">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Add Bookmark</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Confirm Dialog -->
+        <div class="modal" id="confirm-modal">
+            <div class="modal-content modal-small">
+                <div class="modal-header">
+                    <h3 id="confirm-title">Confirm</h3>
+                </div>
+                <p id="confirm-message"></p>
+                <div class="form-actions">
+                    <button class="btn btn-secondary" id="confirm-cancel">Cancel</button>
+                    <button class="btn btn-danger" id="confirm-ok">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+</body>
+</html>

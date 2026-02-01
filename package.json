@@ -1,0 +1,63 @@
+{
+  "name": "nodaysidle",
+  "version": "1.0.0",
+  "description": "A minimal, privacy-focused web browser",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "build:win": "electron-builder --win"
+  },
+  "keywords": [
+    "browser",
+    "electron",
+    "privacy",
+    "minimal"
+  ],
+  "author": "nodaysidle",
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2"
+  },
+  "devDependencies": {
+    "electron": "^40.1.0",
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.nodaysidle.browser",
+    "productName": "nodaysidle",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg",
+        "dir"
+      ]
+    },
+    "linux": {
+      "category": "Network",
+      "icon": "build/icon.png",
+      "target": [
+        "AppImage",
+        "pacman"
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}
