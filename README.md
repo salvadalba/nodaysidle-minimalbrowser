@@ -143,4 +143,4 @@ MIT
 
 ---
 
-*made with no days idle*
+*made with nodaysidle*
