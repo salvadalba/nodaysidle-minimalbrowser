@@ -1,8 +1,9 @@
 name: Build and Release
 
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -29,14 +30,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload AppImage to Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.AppImage
             dist/*.pacman
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-mac:
     runs-on: macos-latest
@@ -59,9 +58,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload DMG to Release
-        uses: softprops/action-gh-release@v1
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
