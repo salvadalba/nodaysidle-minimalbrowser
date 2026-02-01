@@ -5,12 +5,21 @@
 
 const { app, BrowserWindow, BrowserView, ipcMain, session } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const Database = require('./database');
 const TabManager = require('./tabs');
 
+// Load YouTube ad-block content script
+let youtubeAdBlockScript = '';
+try {
+  youtubeAdBlockScript = fs.readFileSync(path.join(__dirname, 'youtube-adblock.js'), 'utf8');
+} catch (e) {
+  console.error('Failed to load YouTube ad-block script:', e);
+}
+
 // Keep references to prevent garbage collection
 let mainWindow = null;
-let contentView = null;
+let tabViews = new Map(); // Map of tabId -> BrowserView
 let db = null;
 let tabManager = null;
 
@@ -21,45 +30,170 @@ let sidebarOpen = false;
 
 // Ad blocking
 let adsBlocked = 0;
-const AD_DOMAINS = [
-  'doubleclick.net',
-  'googlesyndication.com',
-  'googleadservices.com',
-  'google-analytics.com',
-  'googletagmanager.com',
-  'facebook.com/tr',
-  'connect.facebook.net',
-  'ads.youtube.com',
-  'youtube.com/api/stats/ads',
-  'youtube.com/pagead',
-  'youtube.com/ptracking',
-  'youtube.com/get_video_info',
-  'ad.doubleclick.net',
-  'static.doubleclick.net',
-  'adservice.google.com',
-  'pagead2.googlesyndication.com',
-  'tpc.googlesyndication.com',
-  'www.googletagservices.com',
-  'analytics.google.com',
-  'ssl.google-analytics.com',
-  'adsserver.',
-  'adserver.',
-  '/ads/',
-  '/ad/',
-  'banner',
-  'tracking',
-  '.ads.',
-  'advertising',
-  'amazon-adsystem.com',
-  'adsymptotic.com',
-  'adnxs.com',
-  'adzerk.net',
-  'pubmatic.com',
-  'rubiconproject.com',
-  'scorecardresearch.com',
-  'taboola.com',
-  'outbrain.com',
-];
+let youtubeAdsBlocked = 0;
+
+// Structured ad patterns for optimized matching
+const AD_PATTERNS = {
+  // Exact domain matches (O(1) lookup with Set)
+  domains: new Set([
+    'doubleclick.net',
+    'ad.doubleclick.net',
+    'static.doubleclick.net',
+    'googlesyndication.com',
+    'pagead2.googlesyndication.com',
+    'tpc.googlesyndication.com',
+    'googleadservices.com',
+    'adservice.google.com',
+    'google-analytics.com',
+    'ssl.google-analytics.com',
+    'analytics.google.com',
+    'googletagmanager.com',
+    'www.googletagservices.com',
+    'connect.facebook.net',
+    'amazon-adsystem.com',
+    'adsymptotic.com',
+    'adnxs.com',
+    'adzerk.net',
+    'pubmatic.com',
+    'rubiconproject.com',
+    'scorecardresearch.com',
+    'taboola.com',
+    'outbrain.com',
+    'criteo.com',
+    'criteo.net',
+    'moatads.com',
+    'bluekai.com',
+    'exelator.com',
+    'quantserve.com',
+    'rlcdn.com',
+    'sharethis.com',
+    'addthis.com',
+    'eyeota.net',
+    'adsrvr.org',
+    'adform.net',
+    'serving-sys.com',
+    'mathtag.com',
+    'openx.net',
+    'casalemedia.com',
+    'contextweb.com',
+    'lijit.com',
+    'intentiq.com',
+    'bidswitch.net',
+    'justpremium.com',
+    'smartadserver.com',
+  ]),
+
+  // YouTube-specific patterns (checked only on youtube.com)
+  youtube: [
+    'ads.youtube.com',
+    '/pagead/',
+    '/ptracking',
+    '/api/stats/ads',
+    '/api/stats/watchtime',
+    '/api/stats/playback',
+    '/api/stats/qoe',
+    '/api/stats/atr',
+    '/api/stats/delayplay',
+    '/get_midroll_info',
+    '/get_video_info',
+    '/youtubei/v1/log_event',
+    '/youtubei/v1/player/ad',
+    '/pagead/viewthroughconversion',
+    '/pcs/activeview',
+    'youtube.com/api/stats',
+    '/generate_204',
+    '/youtubei/v1/att',
+    'youtube.com/sw.js_data',
+    'i.ytimg.com/an_webp/',
+    'i.ytimg.com/an/',
+    '/ad_status',
+    'yt3.ggpht.com/a/default',
+  ],
+
+  // Facebook tracking
+  facebook: [
+    'facebook.com/tr',
+    'facebook.com/plugins',
+    'fbcdn.net/signals',
+  ],
+
+  // Regex patterns (for complex matching)
+  regex: [
+    /\/ads?\//i,
+    /\/advert/i,
+    /[\?&]ad[_=]/i,
+    /\/sponsored/i,
+    /\/tracker/i,
+    /\/pixel\./i,
+    /\/beacon/i,
+    /\/telemetry/i,
+    /\/analytics\.js/i,
+    /\/gtag\//i,
+  ],
+
+  // Generic path patterns
+  paths: [
+    'adsserver.',
+    'adserver.',
+    '.ads.',
+    '/banner',
+    '/popunder',
+    '/popup_',
+    'tracking.',
+    'tracker.',
+    'advertising.',
+    '/promo/',
+  ],
+};
+
+/**
+ * Check if URL matches ad patterns (optimized)
+ */
+function isAdUrl(url, hostname) {
+  const urlLower = url.toLowerCase();
+  const hostLower = hostname.toLowerCase();
+
+  // 1. Check exact domain matches first (fastest - O(1))
+  for (const domain of AD_PATTERNS.domains) {
+    if (hostLower.includes(domain)) {
+      return { blocked: true, type: 'domain' };
+    }
+  }
+
+  // 2. YouTube-specific patterns (only check on YouTube)
+  if (hostLower.includes('youtube.com') || hostLower.includes('ytimg.com') || hostLower.includes('googlevideo.com')) {
+    for (const pattern of AD_PATTERNS.youtube) {
+      if (urlLower.includes(pattern)) {
+        return { blocked: true, type: 'youtube' };
+      }
+    }
+  }
+
+  // 3. Facebook tracking patterns
+  if (hostLower.includes('facebook.com') || hostLower.includes('fbcdn.net')) {
+    for (const pattern of AD_PATTERNS.facebook) {
+      if (urlLower.includes(pattern)) {
+        return { blocked: true, type: 'facebook' };
+      }
+    }
+  }
+
+  // 4. Generic path patterns
+  for (const pattern of AD_PATTERNS.paths) {
+    if (urlLower.includes(pattern)) {
+      return { blocked: true, type: 'path' };
+    }
+  }
+
+  // 5. Regex patterns (slowest - check last)
+  for (const regex of AD_PATTERNS.regex) {
+    if (regex.test(urlLower)) {
+      return { blocked: true, type: 'regex' };
+    }
+  }
+
+  return { blocked: false, type: null };
+}
 
 /**
  * Setup ad blocking using webRequest API
@@ -70,27 +204,39 @@ function setupAdBlocking() {
   };
 
   session.defaultSession.webRequest.onBeforeRequest(filter, (details, callback) => {
-    const url = details.url.toLowerCase();
+    try {
+      const urlObj = new URL(details.url);
+      const result = isAdUrl(details.url, urlObj.hostname);
 
-    // Check if URL matches any ad pattern
-    const isAd = AD_DOMAINS.some(pattern => url.includes(pattern));
+      if (result.blocked) {
+        adsBlocked++;
+        if (result.type === 'youtube') {
+          youtubeAdsBlocked++;
+        }
 
-    if (isAd) {
-      adsBlocked++;
-      console.log('Blocked ad:', details.url.substring(0, 80));
+        // Log in dev mode only
+        if (process.argv.includes('--enable-logging')) {
+          console.log(`[AdBlock:${result.type}]`, details.url.substring(0, 80));
+        }
 
-      // Notify renderer about blocked ad
-      if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('ad-blocked', adsBlocked);
+        // Notify renderer about blocked ad
+        if (mainWindow && mainWindow.webContents) {
+          mainWindow.webContents.send('ad-blocked', { total: adsBlocked, youtube: youtubeAdsBlocked });
+        }
+
+        callback({ cancel: true });
+      } else {
+        callback({ cancel: false });
       }
-
-      callback({ cancel: true });
-    } else {
+    } catch (e) {
+      // Invalid URL, allow it
       callback({ cancel: false });
     }
   });
 
-  console.log('Ad blocking enabled');
+  console.log('Ad blocking enabled with', AD_PATTERNS.domains.size, 'domains +',
+    AD_PATTERNS.youtube.length, 'YouTube patterns +',
+    AD_PATTERNS.regex.length, 'regex patterns');
 }
 
 /**
@@ -113,35 +259,16 @@ function createWindow() {
   // Load the UI
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
 
-  // Create the content BrowserView for web pages
-  contentView = new BrowserView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  mainWindow.addBrowserView(contentView);
-
-  // Hide content view initially (show welcome screen)
-  contentView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-
   // Update bounds when window is resized
   mainWindow.on('resize', () => {
-    if (contentView.getBounds().width > 0) {
-      updateContentViewBounds();
-    }
+    updateActiveTabViewBounds();
   });
 
   // Handle window close
   mainWindow.on('closed', () => {
     mainWindow = null;
-    contentView = null;
+    tabViews.clear();
   });
-
-  // Setup content view event listeners
-  setupContentViewListeners();
 
   // Open DevTools in development
   if (process.argv.includes('--enable-logging')) {
@@ -150,52 +277,49 @@ function createWindow() {
 }
 
 /**
- * Setup event listeners for the content view
+ * Create a BrowserView for a specific tab
  */
-function setupContentViewListeners() {
-  if (!contentView) return;
-
-  contentView.webContents.on('page-title-updated', (event, title) => {
-    const activeTab = tabManager.getActiveTab();
-    if (activeTab) {
-      tabManager.updateTabTitle(activeTab.id, title);
-      if (mainWindow) {
-        mainWindow.webContents.send('tab-title-updated', activeTab.id, title);
-      }
-    }
+function createTabView(tabId) {
+  const view = new BrowserView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
   });
 
-  contentView.webContents.on('did-navigate', (event, url) => {
-    const activeTab = tabManager.getActiveTab();
-    if (activeTab) {
-      tabManager.updateTabUrl(activeTab.id, url);
-      if (mainWindow) {
-        mainWindow.webContents.send('tab-url-updated', activeTab.id, url);
-      }
-    }
-  });
+  tabViews.set(tabId, view);
+  mainWindow.addBrowserView(view);
 
-  contentView.webContents.on('did-navigate-in-page', (event, url) => {
-    const activeTab = tabManager.getActiveTab();
-    if (activeTab) {
-      tabManager.updateTabUrl(activeTab.id, url);
-      if (mainWindow) {
-        mainWindow.webContents.send('tab-url-updated', activeTab.id, url);
-      }
-    }
-  });
+  // Hide initially
+  view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+
+  // Setup event listeners for this view
+  setupTabViewListeners(tabId, view);
+
+  return view;
 }
 
 /**
- * Update the content view bounds based on window size and sidebar state
+ * Get the active tab's BrowserView
  */
-function updateContentViewBounds() {
-  if (!mainWindow || !contentView) return;
+function getActiveTabView() {
+  const activeTab = tabManager.getActiveTab();
+  if (!activeTab) return null;
+  return tabViews.get(activeTab.id) || null;
+}
+
+/**
+ * Update bounds for the active tab's view
+ */
+function updateActiveTabViewBounds() {
+  const view = getActiveTabView();
+  if (!view || !mainWindow) return;
 
   const bounds = mainWindow.getContentBounds();
   const xOffset = sidebarOpen ? SIDEBAR_WIDTH : 0;
 
-  contentView.setBounds({
+  view.setBounds({
     x: xOffset,
     y: HEADER_HEIGHT,
     width: bounds.width - xOffset,
@@ -204,16 +328,153 @@ function updateContentViewBounds() {
 }
 
 /**
- * Navigate the content view to a URL
+ * Show only the specified tab's view, hide all others
  */
-function navigateToUrl(url) {
-  if (!contentView) return;
+function showTabView(tabId) {
+  if (!mainWindow) return;
 
-  // Show the content view
-  updateContentViewBounds();
+  const bounds = mainWindow.getContentBounds();
+  const xOffset = sidebarOpen ? SIDEBAR_WIDTH : 0;
+  const visibleBounds = {
+    x: xOffset,
+    y: HEADER_HEIGHT,
+    width: bounds.width - xOffset,
+    height: bounds.height - HEADER_HEIGHT,
+  };
+  const hiddenBounds = { x: 0, y: 0, width: 0, height: 0 };
+
+  // Hide all views, show only the active one
+  for (const [id, view] of tabViews) {
+    if (id === tabId) {
+      view.setBounds(visibleBounds);
+    } else {
+      view.setBounds(hiddenBounds);
+    }
+  }
+}
+
+/**
+ * Hide all tab views (show welcome screen)
+ */
+function hideAllTabViews() {
+  const hiddenBounds = { x: 0, y: 0, width: 0, height: 0 };
+  for (const view of tabViews.values()) {
+    view.setBounds(hiddenBounds);
+  }
+}
+
+/**
+ * Destroy a tab's BrowserView
+ */
+function destroyTabView(tabId) {
+  const view = tabViews.get(tabId);
+  if (view) {
+    mainWindow.removeBrowserView(view);
+    view.webContents.destroy();
+    tabViews.delete(tabId);
+  }
+}
+
+/**
+ * Inject YouTube ad-block script if on YouTube
+ */
+function injectYouTubeAdBlocker(view, url) {
+  if (!view || !youtubeAdBlockScript) return;
+
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname.includes('youtube.com')) {
+      view.webContents.executeJavaScript(youtubeAdBlockScript)
+        .then(() => {
+          if (process.argv.includes('--enable-logging')) {
+            console.log('[YouTube] Ad-block script injected');
+          }
+        })
+        .catch(err => {
+          console.error('[YouTube] Failed to inject ad-block script:', err);
+        });
+    }
+  } catch (e) {
+    // Invalid URL, ignore
+  }
+}
+
+/**
+ * Setup event listeners for a tab's BrowserView
+ */
+function setupTabViewListeners(tabId, view) {
+  if (!view) return;
+
+  view.webContents.on('page-title-updated', (event, title) => {
+    tabManager.updateTabTitle(tabId, title);
+    if (mainWindow) {
+      mainWindow.webContents.send('tab-title-updated', tabId, title);
+    }
+  });
+
+  view.webContents.on('did-navigate', (event, url) => {
+    tabManager.updateTabUrl(tabId, url);
+    if (mainWindow) {
+      mainWindow.webContents.send('tab-url-updated', tabId, url);
+    }
+  });
+
+  view.webContents.on('did-navigate-in-page', (event, url) => {
+    tabManager.updateTabUrl(tabId, url);
+    if (mainWindow) {
+      mainWindow.webContents.send('tab-url-updated', tabId, url);
+    }
+  });
+
+  // Inject YouTube ad-blocker when page finishes loading
+  view.webContents.on('did-finish-load', () => {
+    const url = view.webContents.getURL();
+    injectYouTubeAdBlocker(view, url);
+  });
+
+  // Also inject on SPA navigation (YouTube is a SPA)
+  view.webContents.on('did-navigate-in-page', (event, url) => {
+    injectYouTubeAdBlocker(view, url);
+  });
+
+  // Handle links that want to open in a new window/tab
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    // Create a new tab with this URL instead of opening external browser
+    const newTab = tabManager.createTab(url);
+    const newView = createTabView(newTab.id);
+
+    // Navigate the new tab to the URL
+    newView.webContents.loadURL(url);
+
+    // Show the new tab
+    showTabView(newTab.id);
+
+    // Notify renderer to update UI
+    if (mainWindow) {
+      mainWindow.webContents.send('new-tab-created', newTab);
+    }
+
+    // Prevent default behavior (opening in external browser)
+    return { action: 'deny' };
+  });
+}
+
+/**
+ * Navigate a tab's view to a URL
+ */
+function navigateToUrl(tabId, url) {
+  let view = tabViews.get(tabId);
+
+  // Create view if it doesn't exist
+  if (!view) {
+    view = createTabView(tabId);
+  }
+
+  // Show this tab's view
+  showTabView(tabId);
 
   // Navigate
-  contentView.webContents.loadURL(url);
+  view.webContents.loadURL(url);
 }
 
 /**
@@ -247,8 +508,8 @@ ipcMain.handle('navigate', async (event, input, tabId) => {
   // Update tab state
   tabManager.updateTabUrl(tabId, result.url);
 
-  // Navigate the content view
-  navigateToUrl(result.url);
+  // Navigate the tab's view
+  navigateToUrl(tabId, result.url);
 
   // Record in history
   db.recordVisit(result.url, null);
@@ -257,72 +518,78 @@ ipcMain.handle('navigate', async (event, input, tabId) => {
 });
 
 ipcMain.handle('go-back', async () => {
-  if (contentView && contentView.webContents.canGoBack()) {
-    contentView.webContents.goBack();
+  const view = getActiveTabView();
+  if (view && view.webContents.canGoBack()) {
+    view.webContents.goBack();
     return true;
   }
   return false;
 });
 
 ipcMain.handle('go-forward', async () => {
-  if (contentView && contentView.webContents.canGoForward()) {
-    contentView.webContents.goForward();
+  const view = getActiveTabView();
+  if (view && view.webContents.canGoForward()) {
+    view.webContents.goForward();
     return true;
   }
   return false;
 });
 
 ipcMain.handle('reload', async () => {
-  if (contentView) {
-    contentView.webContents.reload();
+  const view = getActiveTabView();
+  if (view) {
+    view.webContents.reload();
     return true;
   }
   return false;
 });
 
 ipcMain.handle('show-content-view', async () => {
-  updateContentViewBounds();
+  const activeTab = tabManager.getActiveTab();
+  if (activeTab) {
+    showTabView(activeTab.id);
+  }
 });
 
 ipcMain.handle('hide-content-view', async () => {
-  if (contentView) {
-    contentView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-  }
+  hideAllTabViews();
 });
 
 // Sidebar toggle
 ipcMain.handle('toggle-sidebar', async (event, isOpen) => {
   sidebarOpen = isOpen;
-  // Only update if content view is visible
-  if (contentView && contentView.getBounds().width > 0) {
-    updateContentViewBounds();
-  }
+  // Update active tab view bounds
+  updateActiveTabViewBounds();
   return sidebarOpen;
 });
 
 // Get ads blocked count
 ipcMain.handle('get-ads-blocked', async () => {
-  return adsBlocked;
+  return { total: adsBlocked, youtube: youtubeAdsBlocked };
 });
 
 // Tab Management
 ipcMain.handle('create-tab', async (event, url) => {
-  return tabManager.createTab(url);
+  const tab = tabManager.createTab(url);
+  // Create a BrowserView for this tab
+  createTabView(tab.id);
+  return tab;
 });
 
 ipcMain.handle('close-tab', async (event, tabId) => {
+  // Destroy the BrowserView for this tab
+  destroyTabView(tabId);
   return tabManager.closeTab(tabId);
 });
 
 ipcMain.handle('switch-tab', async (event, tabId) => {
   const tab = tabManager.switchTab(tabId);
   if (tab && tab.url && tab.url !== 'about:blank') {
-    navigateToUrl(tab.url);
+    // Just show the existing view (no reload!)
+    showTabView(tabId);
   } else {
-    // Hide content view to show welcome screen
-    if (contentView) {
-      contentView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    }
+    // Hide all views to show welcome screen
+    hideAllTabViews();
   }
   return tab;
 });
@@ -352,8 +619,16 @@ ipcMain.handle('remove-bookmark', async (event, id) => {
   return db.removeBookmark(id);
 });
 
+ipcMain.handle('remove-bookmark-by-url', async (event, url) => {
+  return db.removeBookmarkByUrl(url);
+});
+
 ipcMain.handle('get-bookmarks', async (event, parentId) => {
   return db.getBookmarks(parentId);
+});
+
+ipcMain.handle('is-bookmarked', async (event, url) => {
+  return db.isBookmarked(url);
 });
 
 ipcMain.handle('create-bookmark-folder', async (event, title, parentId) => {

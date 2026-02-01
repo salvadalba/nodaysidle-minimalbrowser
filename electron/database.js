@@ -77,6 +77,18 @@ class DriftDatabase {
     return true;
   }
 
+  removeBookmarkByUrl(url) {
+    const stmt = this.db.prepare('DELETE FROM bookmarks WHERE url = ?');
+    const result = stmt.run(url);
+    return result.changes > 0;
+  }
+
+  isBookmarked(url) {
+    const stmt = this.db.prepare('SELECT id FROM bookmarks WHERE url = ? AND is_folder = 0 LIMIT 1');
+    const result = stmt.get(url);
+    return result ? { bookmarked: true, id: result.id } : { bookmarked: false, id: null };
+  }
+
   getBookmarks(parentId = null) {
     const stmt = this.db.prepare(`
       SELECT * FROM bookmarks

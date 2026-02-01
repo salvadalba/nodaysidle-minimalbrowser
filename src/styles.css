@@ -271,6 +271,52 @@ body {
     color: var(--text-muted);
 }
 
+/* Quick Bookmark Button (inside URL bar) */
+.quick-bookmark-btn {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.bookmark-circle {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: transparent;
+    transition: all var(--transition-fast);
+}
+
+.quick-bookmark-btn:hover .bookmark-circle {
+    background: var(--accent-glow);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.quick-bookmark-btn.bookmarked .bookmark-circle {
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.quick-bookmark-btn:active .bookmark-circle {
+    transform: scale(0.9);
+}
+
+/* Adjust URL input padding to make room for bookmark button */
+.url-input {
+    padding-right: 38px;
+}
+
 /* Autocomplete Dropdown */
 .autocomplete-dropdown {
     display: none;

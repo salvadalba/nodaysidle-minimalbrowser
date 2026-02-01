@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initKeyboardShortcuts();
     initNavControls();
     initQuickLinks();
+    initQuickBookmark();
 
     // Load initial data
     loadBookmarks();
@@ -51,16 +52,97 @@ function setupElectronListeners() {
         const activeTab = document.querySelector('.tab.active');
         if (activeTab && activeTab.dataset.tabId === tabId) {
             document.getElementById('url-input').value = url;
+            updateBookmarkStatus(url);
         }
     });
 
     // Listen for ad blocked events
-    window.electronAPI.onAdBlocked((count) => {
+    window.electronAPI.onAdBlocked((data) => {
         const adblockCount = document.getElementById('adblock-count');
         if (adblockCount) {
-            adblockCount.textContent = count;
+            adblockCount.textContent = data.total;
         }
     });
+
+    // Listen for new tabs created from links (target="_blank")
+    window.electronAPI.onNewTabCreated((tab) => {
+        // Render the new tab in the tab bar
+        renderTab(tab.id, tab.title, true);
+        // Update URL bar with the new tab's URL
+        document.getElementById('url-input').value = tab.url || '';
+        // Hide welcome screen since we're navigating
+        document.getElementById('welcome-screen').classList.add('hidden');
+        // Update bookmark status
+        updateBookmarkStatus(tab.url || '');
+    });
+}
+
+// ============================================
+// Quick Bookmark Button
+// ============================================
+let currentPageBookmarked = false;
+
+function initQuickBookmark() {
+    const quickBookmarkBtn = document.getElementById('quick-bookmark-btn');
+
+    quickBookmarkBtn.addEventListener('click', async () => {
+        const urlInput = document.getElementById('url-input');
+        const currentUrl = urlInput.value;
+
+        if (!currentUrl || currentUrl === '' || currentUrl === 'about:blank') {
+            showToast('No page to bookmark', 'info');
+            return;
+        }
+
+        try {
+            if (isElectronAvailable()) {
+                if (currentPageBookmarked) {
+                    // Remove bookmark
+                    await window.electronAPI.removeBookmarkByUrl(currentUrl);
+                    currentPageBookmarked = false;
+                    quickBookmarkBtn.classList.remove('bookmarked');
+                    showToast('Bookmark removed', 'success');
+                } else {
+                    // Add bookmark
+                    const activeTab = document.querySelector('.tab.active');
+                    const title = activeTab ?
+                        activeTab.querySelector('.tab-title').textContent :
+                        extractDomain(currentUrl);
+                    await window.electronAPI.addBookmark(title, currentUrl, null);
+                    currentPageBookmarked = true;
+                    quickBookmarkBtn.classList.add('bookmarked');
+                    showToast('Bookmarked', 'success');
+                }
+                // Refresh bookmarks list if sidebar is open
+                loadBookmarks();
+            }
+        } catch (error) {
+            showToast('Failed to update bookmark: ' + error, 'error');
+        }
+    });
+}
+
+async function updateBookmarkStatus(url) {
+    if (!url || url === '' || url === 'about:blank') {
+        currentPageBookmarked = false;
+        document.getElementById('quick-bookmark-btn').classList.remove('bookmarked');
+        return;
+    }
+
+    try {
+        if (isElectronAvailable()) {
+            const result = await window.electronAPI.isBookmarked(url);
+            currentPageBookmarked = result.bookmarked;
+            const quickBookmarkBtn = document.getElementById('quick-bookmark-btn');
+            if (result.bookmarked) {
+                quickBookmarkBtn.classList.add('bookmarked');
+            } else {
+                quickBookmarkBtn.classList.remove('bookmarked');
+            }
+        }
+    } catch (error) {
+        console.error('Failed to check bookmark status:', error);
+    }
 }
 
 // ============================================
@@ -243,9 +325,19 @@ async function createTab(url = null) {
             const tab = await window.electronAPI.createTab(url);
             renderTab(tab.id, tab.title, true);
 
-            // Hide welcome screen, show content area
-            document.getElementById('welcome-screen').classList.remove('hidden');
-            await window.electronAPI.hideContentView();
+            // Clear URL bar for new empty tab
+            document.getElementById('url-input').value = url || '';
+
+            // Show welcome screen for empty tabs, hide for tabs with URL
+            if (!url || url === 'about:blank') {
+                document.getElementById('welcome-screen').classList.remove('hidden');
+                await window.electronAPI.hideContentView();
+            } else {
+                document.getElementById('welcome-screen').classList.add('hidden');
+            }
+
+            // Update bookmark status
+            updateBookmarkStatus(url || '');
         } else {
             // Fallback for non-Electron environment
             const tabId = 'tab-' + Date.now();
@@ -365,9 +457,11 @@ async function switchTab(tabId) {
             if (tab && tab.url && tab.url !== 'about:blank') {
                 document.getElementById('url-input').value = tab.url;
                 document.getElementById('welcome-screen').classList.add('hidden');
+                updateBookmarkStatus(tab.url);
             } else {
                 document.getElementById('url-input').value = '';
                 document.getElementById('welcome-screen').classList.remove('hidden');
+                updateBookmarkStatus('');
             }
         }
 
@@ -533,6 +627,9 @@ async function navigate(input) {
 
             // Hide welcome screen
             welcomeScreen.classList.add('hidden');
+
+            // Update bookmark button status
+            updateBookmarkStatus(result.url);
         }
     } catch (error) {
         showToast('Navigation failed: ' + error, 'error');

@@ -26,7 +26,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Bookmarks
   addBookmark: (title, url, parentId) => ipcRenderer.invoke('add-bookmark', title, url, parentId),
   removeBookmark: (id) => ipcRenderer.invoke('remove-bookmark', id),
+  removeBookmarkByUrl: (url) => ipcRenderer.invoke('remove-bookmark-by-url', url),
   getBookmarks: (parentId) => ipcRenderer.invoke('get-bookmarks', parentId),
+  isBookmarked: (url) => ipcRenderer.invoke('is-bookmarked', url),
   createBookmarkFolder: (title, parentId) => ipcRenderer.invoke('create-bookmark-folder', title, parentId),
 
   // History
@@ -51,5 +53,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onAdBlocked: (callback) => {
     ipcRenderer.on('ad-blocked', (event, count) => callback(count));
+  },
+  onNewTabCreated: (callback) => {
+    ipcRenderer.on('new-tab-created', (event, tab) => callback(tab));
   },
 });
