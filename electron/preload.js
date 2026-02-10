@@ -5,6 +5,12 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Helper to safely register one-time listeners (prevents leak on re-call)
+function onceListener(channel, callback) {
+  ipcRenderer.removeAllListeners(channel);
+  ipcRenderer.on(channel, callback);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   // Navigation
   navigate: (input, tabId) => ipcRenderer.invoke('navigate', input, tabId),
@@ -44,17 +50,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Ad blocking
   getAdsBlocked: () => ipcRenderer.invoke('get-ads-blocked'),
 
-  // Event listeners
+  // Event listeners (safe: removes previous before adding)
   onTabTitleUpdated: (callback) => {
-    ipcRenderer.on('tab-title-updated', (event, tabId, title) => callback(tabId, title));
+    onceListener('tab-title-updated', (event, tabId, title) => callback(tabId, title));
   },
   onTabUrlUpdated: (callback) => {
-    ipcRenderer.on('tab-url-updated', (event, tabId, url) => callback(tabId, url));
+    onceListener('tab-url-updated', (event, tabId, url) => callback(tabId, url));
   },
   onAdBlocked: (callback) => {
-    ipcRenderer.on('ad-blocked', (event, count) => callback(count));
+    onceListener('ad-blocked', (event, count) => callback(count));
   },
   onNewTabCreated: (callback) => {
-    ipcRenderer.on('new-tab-created', (event, tab) => callback(tab));
+    onceListener('new-tab-created', (event, tab) => callback(tab));
+  },
+  onNavStateUpdated: (callback) => {
+    onceListener('nav-state-updated', (event, tabId, state) => callback(tabId, state));
+  },
+  onNavigationError: (callback) => {
+    onceListener('navigation-error', (event, tabId, error) => callback(tabId, error));
   },
 });

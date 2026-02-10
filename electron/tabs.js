@@ -3,7 +3,7 @@
  * Manages browser tabs state
  */
 
-const { v4: uuidv4 } = require('crypto');
+const crypto = require('crypto');
 
 class TabManager {
   constructor() {
@@ -16,7 +16,7 @@ class TabManager {
    * Generate a unique tab ID
    */
   generateId() {
-    return `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return `tab-${crypto.randomUUID()}`;
   }
 
   /**

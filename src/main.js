@@ -21,8 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initModals();
     initKeyboardShortcuts();
     initNavControls();
-    initQuickLinks();
     initQuickBookmark();
+    initNavErrorBanner();
 
     // Load initial data
     loadBookmarks();
@@ -53,6 +53,8 @@ function setupElectronListeners() {
         if (activeTab && activeTab.dataset.tabId === tabId) {
             document.getElementById('url-input').value = url;
             updateBookmarkStatus(url);
+            // Hide error banner on successful navigation
+            hideNavError();
         }
     });
 
@@ -66,15 +68,74 @@ function setupElectronListeners() {
 
     // Listen for new tabs created from links (target="_blank")
     window.electronAPI.onNewTabCreated((tab) => {
-        // Render the new tab in the tab bar
         renderTab(tab.id, tab.title, true);
-        // Update URL bar with the new tab's URL
         document.getElementById('url-input').value = tab.url || '';
-        // Hide welcome screen since we're navigating
         document.getElementById('welcome-screen').classList.add('hidden');
-        // Update bookmark status
+        hideNavError();
         updateBookmarkStatus(tab.url || '');
     });
+
+    // Listen for back/forward state changes
+    window.electronAPI.onNavStateUpdated((tabId, state) => {
+        const activeTab = document.querySelector('.tab.active');
+        if (activeTab && activeTab.dataset.tabId === tabId) {
+            document.getElementById('back-btn').disabled = !state.canGoBack;
+            document.getElementById('forward-btn').disabled = !state.canGoForward;
+        }
+    });
+
+    // Listen for navigation errors
+    window.electronAPI.onNavigationError((tabId, error) => {
+        const activeTab = document.querySelector('.tab.active');
+        if (activeTab && activeTab.dataset.tabId === tabId) {
+            showNavError(error);
+        }
+    });
+}
+
+// ============================================
+// Navigation Error Banner
+// ============================================
+function initNavErrorBanner() {
+    document.getElementById('nav-error-retry').addEventListener('click', async () => {
+        hideNavError();
+        if (isElectronAvailable()) {
+            await window.electronAPI.reload();
+        }
+    });
+}
+
+function showNavError(error) {
+    const banner = document.getElementById('nav-error-banner');
+    const ERROR_MESSAGES = {
+        '-2': ['DNS resolution failed', 'The server could not be found. Check the URL or your internet connection.'],
+        '-3': ['Navigation cancelled', 'The page load was interrupted.'],
+        '-6': ['Connection refused', 'The server refused the connection. It may be down or unreachable.'],
+        '-7': ['Connection timed out', 'The server took too long to respond.'],
+        '-100': ['Connection closed', 'The connection was unexpectedly closed.'],
+        '-101': ['Connection reset', 'The connection was reset by the server.'],
+        '-102': ['Connection refused', 'The server actively refused the connection.'],
+        '-105': ['Name not resolved', 'The server name could not be found. Check the URL.'],
+        '-106': ['Internet disconnected', 'Your device appears to be offline.'],
+        '-200': ['Certificate error', 'The site\'s security certificate is not trusted.'],
+        '-201': ['Certificate date invalid', 'The site\'s certificate has expired or is not yet valid.'],
+        '-202': ['Certificate authority invalid', 'The certificate is not from a trusted authority.'],
+    };
+
+    const code = String(error.errorCode);
+    const [title, description] = ERROR_MESSAGES[code] || [
+        `Load failed (${error.errorDescription || code})`,
+        'The page could not be loaded.'
+    ];
+
+    document.getElementById('nav-error-title').textContent = title;
+    document.getElementById('nav-error-description').textContent = description;
+    document.getElementById('nav-error-url').textContent = error.url || '';
+    banner.classList.add('visible');
+}
+
+function hideNavError() {
+    document.getElementById('nav-error-banner').classList.remove('visible');
 }
 
 // ============================================
@@ -97,13 +158,11 @@ function initQuickBookmark() {
         try {
             if (isElectronAvailable()) {
                 if (currentPageBookmarked) {
-                    // Remove bookmark
                     await window.electronAPI.removeBookmarkByUrl(currentUrl);
                     currentPageBookmarked = false;
                     quickBookmarkBtn.classList.remove('bookmarked');
                     showToast('Bookmark removed', 'success');
                 } else {
-                    // Add bookmark
                     const activeTab = document.querySelector('.tab.active');
                     const title = activeTab ?
                         activeTab.querySelector('.tab-title').textContent :
@@ -113,7 +172,6 @@ function initQuickBookmark() {
                     quickBookmarkBtn.classList.add('bookmarked');
                     showToast('Bookmarked', 'success');
                 }
-                // Refresh bookmarks list if sidebar is open
                 loadBookmarks();
             }
         } catch (error) {
@@ -155,41 +213,26 @@ function initNavControls() {
 
     backBtn.addEventListener('click', async () => {
         if (isElectronAvailable()) {
-            const success = await window.electronAPI.goBack();
-            if (!success) showToast('Cannot go back', 'info');
+            await window.electronAPI.goBack();
         }
     });
 
     forwardBtn.addEventListener('click', async () => {
         if (isElectronAvailable()) {
-            const success = await window.electronAPI.goForward();
-            if (!success) showToast('Cannot go forward', 'info');
+            await window.electronAPI.goForward();
         }
     });
 
     reloadBtn.addEventListener('click', async () => {
+        hideNavError();
         if (isElectronAvailable()) {
             await window.electronAPI.reload();
         }
     });
 
-    // Enable nav buttons (BrowserView handles history state)
-    backBtn.disabled = false;
-    forwardBtn.disabled = false;
-}
-
-// ============================================
-// Quick Links on Welcome Screen
-// ============================================
-function initQuickLinks() {
-    document.querySelectorAll('.quick-link').forEach(link => {
-        link.addEventListener('click', () => {
-            const url = link.dataset.url;
-            if (url) {
-                navigate(url);
-            }
-        });
-    });
+    // Start disabled until navigation state is received
+    backBtn.disabled = true;
+    forwardBtn.disabled = true;
 }
 
 // ============================================
@@ -200,34 +243,26 @@ function initSidebar() {
     const toggleBtn = document.getElementById('sidebar-toggle-btn');
     const sidebarTabs = document.querySelectorAll('.sidebar-tab');
 
-    // Sidebar starts closed by default
     sidebar.classList.remove('open');
 
-    // Toggle sidebar
     toggleBtn.addEventListener('click', async () => {
         sidebar.classList.toggle('open');
         const isOpen = sidebar.classList.contains('open');
-
-        // Notify main process to adjust BrowserView bounds
         if (isElectronAvailable()) {
             await window.electronAPI.toggleSidebar(isOpen);
         }
     });
 
-    // Sidebar tab switching
     sidebarTabs.forEach(tab => {
         tab.addEventListener('click', () => {
             const panelName = tab.dataset.panel;
 
-            // Update tab states
             sidebarTabs.forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
 
-            // Update panel visibility
             document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
             document.getElementById(`${panelName}-panel`).classList.add('active');
 
-            // Load data for the panel
             if (panelName === 'history') {
                 loadHistory();
             } else if (panelName === 'bookmarks') {
@@ -236,19 +271,23 @@ function initSidebar() {
         });
     });
 
-    // Clear history button
-    document.getElementById('clear-history-btn').addEventListener('click', async () => {
-        if (confirm('Are you sure you want to clear all history?')) {
-            try {
-                if (isElectronAvailable()) {
-                    await window.electronAPI.clearHistory(null);
+    // Clear history button - uses custom confirm modal instead of native confirm()
+    document.getElementById('clear-history-btn').addEventListener('click', () => {
+        showConfirmDialog(
+            'Clear History',
+            'Are you sure you want to clear all browsing history? This cannot be undone.',
+            async () => {
+                try {
+                    if (isElectronAvailable()) {
+                        await window.electronAPI.clearHistory(null);
+                    }
+                    loadHistory();
+                    showToast('History cleared', 'success');
+                } catch (error) {
+                    showToast('Failed to clear history: ' + error, 'error');
                 }
-                loadHistory();
-                showToast('History cleared', 'success');
-            } catch (error) {
-                showToast('Failed to clear history: ' + error, 'error');
             }
-        }
+        );
     });
 
     // History search
@@ -269,12 +308,10 @@ function initTabBar() {
     const newTabBtn = document.getElementById('new-tab-btn');
     const tabsContainer = document.getElementById('tabs-container');
 
-    // New tab button
     newTabBtn.addEventListener('click', () => {
         createTab();
     });
 
-    // Tab container click delegation
     tabsContainer.addEventListener('click', (e) => {
         const tab = e.target.closest('.tab');
         if (!tab) return;
@@ -287,7 +324,6 @@ function initTabBar() {
     });
 }
 
-// Load existing tabs from backend
 async function loadTabs() {
     try {
         if (!isElectronAvailable()) {
@@ -299,12 +335,10 @@ async function loadTabs() {
         const tabsContainer = document.getElementById('tabs-container');
 
         if (!tabs || tabs.length === 0) {
-            // Create initial tab if none exist
             await createTab();
             return;
         }
 
-        // Render existing tabs
         tabsContainer.innerHTML = '';
         const activeTab = await window.electronAPI.getActiveTab();
         tabs.forEach(tab => {
@@ -313,22 +347,18 @@ async function loadTabs() {
 
     } catch (error) {
         console.error('Failed to load tabs:', error);
-        // Fallback: create a new tab
         await createTab();
     }
 }
 
-// Create a new tab
 async function createTab(url = null) {
     try {
         if (isElectronAvailable()) {
             const tab = await window.electronAPI.createTab(url);
             renderTab(tab.id, tab.title, true);
 
-            // Clear URL bar for new empty tab
             document.getElementById('url-input').value = url || '';
 
-            // Show welcome screen for empty tabs, hide for tabs with URL
             if (!url || url === 'about:blank') {
                 document.getElementById('welcome-screen').classList.remove('hidden');
                 await window.electronAPI.hideContentView();
@@ -336,10 +366,13 @@ async function createTab(url = null) {
                 document.getElementById('welcome-screen').classList.add('hidden');
             }
 
-            // Update bookmark status
+            hideNavError();
             updateBookmarkStatus(url || '');
+
+            // Reset nav buttons for new tab
+            document.getElementById('back-btn').disabled = true;
+            document.getElementById('forward-btn').disabled = true;
         } else {
-            // Fallback for non-Electron environment
             const tabId = 'tab-' + Date.now();
             renderTab(tabId, url || 'New Tab', true);
         }
@@ -348,7 +381,6 @@ async function createTab(url = null) {
     }
 }
 
-// Render a tab in the tab bar
 function renderTab(tabId, title, isActive = true) {
     const tabsContainer = document.getElementById('tabs-container');
 
@@ -361,18 +393,14 @@ function renderTab(tabId, title, isActive = true) {
         <button class="tab-close">&times;</button>
     `;
 
-    // If this tab is active, remove active from other tabs
     if (isActive) {
         tabsContainer.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     }
 
     tabsContainer.appendChild(tab);
-
-    // Setup drag and drop
     setupTabDragDrop(tab);
 }
 
-// Setup drag and drop for tab reordering
 function setupTabDragDrop(tab) {
     tab.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', tab.dataset.tabId);
@@ -398,12 +426,10 @@ function setupTabDragDrop(tab) {
     });
 }
 
-// Close a tab
 async function closeTab(tabId) {
     try {
         const tabs = document.querySelectorAll('.tab');
 
-        // Don't allow closing the last tab
         if (tabs.length <= 1) {
             showToast('Cannot close the last tab', 'info');
             return;
@@ -419,16 +445,13 @@ async function closeTab(tabId) {
             const nextTab = tab.nextElementSibling || tab.previousElementSibling;
             tab.remove();
 
-            // If active tab was closed, switch to another
             if (wasActive && nextTab) {
                 await switchTab(nextTab.dataset.tabId);
             } else if (wasActive) {
-                // No more tabs, show welcome screen
                 showWelcomeScreen();
             }
         }
 
-        // Show welcome screen if no tabs left
         if (document.querySelectorAll('.tab').length === 0) {
             showWelcomeScreen();
         }
@@ -437,23 +460,21 @@ async function closeTab(tabId) {
     }
 }
 
-// Show welcome screen and hide content view
 async function showWelcomeScreen() {
     const welcomeScreen = document.getElementById('welcome-screen');
     welcomeScreen.classList.remove('hidden');
+    hideNavError();
 
     if (isElectronAvailable()) {
         await window.electronAPI.hideContentView();
     }
 }
 
-// Switch to a tab
 async function switchTab(tabId) {
     try {
         if (isElectronAvailable()) {
             const tab = await window.electronAPI.switchTab(tabId);
 
-            // Update URL bar if tab has a URL
             if (tab && tab.url && tab.url !== 'about:blank') {
                 document.getElementById('url-input').value = tab.url;
                 document.getElementById('welcome-screen').classList.add('hidden');
@@ -463,6 +484,8 @@ async function switchTab(tabId) {
                 document.getElementById('welcome-screen').classList.remove('hidden');
                 updateBookmarkStatus('');
             }
+
+            hideNavError();
         }
 
         document.querySelectorAll('.tab').forEach(t => {
@@ -483,14 +506,14 @@ function initUrlBar() {
     const autocompleteDropdown = document.getElementById('autocomplete-dropdown');
     let debounceTimer = null;
 
-    // Navigate on Enter
     urlInput.addEventListener('keydown', (e) => {
         const items = autocompleteDropdown.querySelectorAll('.autocomplete-item');
 
         if (e.key === 'Enter') {
             e.preventDefault();
             if (selectedIndex >= 0 && items[selectedIndex]) {
-                navigate(items[selectedIndex].dataset.url || urlInput.value);
+                const url = items[selectedIndex].dataset.url;
+                navigate(url);
             } else {
                 navigate(urlInput.value);
             }
@@ -509,7 +532,6 @@ function initUrlBar() {
         }
     });
 
-    // Autocomplete on input (debounced)
     urlInput.addEventListener('input', () => {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -517,12 +539,10 @@ function initUrlBar() {
         }, 300);
     });
 
-    // Focus handling
     urlInput.addEventListener('focus', () => {
         urlInput.select();
     });
 
-    // Click outside to hide autocomplete
     document.addEventListener('click', (e) => {
         if (!e.target.closest('.url-bar-container')) {
             hideAutocomplete();
@@ -530,7 +550,6 @@ function initUrlBar() {
     });
 }
 
-// Fetch autocomplete suggestions
 async function fetchAutocomplete(query) {
     if (!query || query.length < 2) {
         hideAutocomplete();
@@ -543,26 +562,36 @@ async function fetchAutocomplete(query) {
         // Search history for suggestions
         if (isElectronAvailable()) {
             const historyResults = await window.electronAPI.searchHistory(query);
-            suggestions = historyResults.slice(0, 5).map(h => h.url);
+            suggestions = historyResults.slice(0, 5).map(h => ({
+                label: h.title || h.url,
+                url: h.url,
+                type: 'history',
+            }));
         }
-
-        // Add search suggestion
-        suggestions.push(`${query} - DuckDuckGo Search`);
 
         // Add URL suggestion if it looks like a domain
         if (query.includes('.') && !query.includes(' ')) {
-            suggestions.unshift(`https://${query}`);
+            suggestions.unshift({
+                label: `https://${query}`,
+                url: `https://${query}`,
+                type: 'url',
+            });
         }
 
-        renderAutocomplete(suggestions, query);
+        // Add DuckDuckGo search suggestion (navigates to search, not the literal text)
+        suggestions.push({
+            label: `Search "${query}"`,
+            url: query,  // resolveInput on backend will convert to DuckDuckGo URL
+            type: 'search',
+        });
+
+        renderAutocomplete(suggestions);
     } catch (error) {
         console.error('Autocomplete error:', error);
-        renderAutocomplete([query + ' - DuckDuckGo Search'], query);
     }
 }
 
-// Render autocomplete suggestions
-function renderAutocomplete(suggestions, query) {
+function renderAutocomplete(suggestions) {
     const dropdown = document.getElementById('autocomplete-dropdown');
 
     if (suggestions.length === 0) {
@@ -570,16 +599,17 @@ function renderAutocomplete(suggestions, query) {
         return;
     }
 
-    dropdown.innerHTML = suggestions.map((suggestion, index) => `
-        <div class="autocomplete-item" data-index="${index}" data-url="${escapeHtml(suggestion)}">
-            <span class="autocomplete-item-icon">🔍</span>
-            <span class="autocomplete-item-text">${escapeHtml(suggestion)}</span>
+    const ICONS = { history: '&#x23F2;', url: '&#x1F310;', search: '&#x1F50D;' };
+
+    dropdown.innerHTML = suggestions.map((s, index) => `
+        <div class="autocomplete-item" data-index="${index}" data-url="${escapeHtml(s.url)}">
+            <span class="autocomplete-item-icon">${ICONS[s.type] || ICONS.search}</span>
+            <span class="autocomplete-item-text">${escapeHtml(s.label)}</span>
         </div>
     `).join('');
 
     dropdown.classList.add('visible');
 
-    // Click on suggestion
     dropdown.querySelectorAll('.autocomplete-item').forEach(item => {
         item.addEventListener('click', () => {
             navigate(item.dataset.url);
@@ -600,7 +630,6 @@ function hideAutocomplete() {
     selectedIndex = -1;
 }
 
-// Navigate to URL or search
 async function navigate(input) {
     if (!input) return;
 
@@ -609,7 +638,6 @@ async function navigate(input) {
     const activeTab = document.querySelector('.tab.active');
 
     if (!activeTab) {
-        // Create a new tab if none exists
         await createTab(input);
         return;
     }
@@ -618,17 +646,14 @@ async function navigate(input) {
 
     try {
         if (isElectronAvailable()) {
+            hideNavError();
             const result = await window.electronAPI.navigate(input, tabId);
             urlInput.value = result.url;
 
-            // Update tab title based on whether it was a search
             const title = result.isSearch ? `Search: ${input}` : extractDomain(result.url);
             activeTab.querySelector('.tab-title').textContent = title;
 
-            // Hide welcome screen
             welcomeScreen.classList.add('hidden');
-
-            // Update bookmark button status
             updateBookmarkStatus(result.url);
         }
     } catch (error) {
@@ -636,7 +661,6 @@ async function navigate(input) {
     }
 }
 
-// Extract domain from URL for display
 function extractDomain(url) {
     try {
         const urlObj = new URL(url);
@@ -649,6 +673,8 @@ function extractDomain(url) {
 // ============================================
 // Modal Management
 // ============================================
+let pendingConfirmCallback = null;
+
 function initModals() {
     // Add Bookmark Modal
     const addBookmarkBtn = document.getElementById('add-bookmark-btn');
@@ -658,7 +684,6 @@ function initModals() {
     const addBookmarkForm = document.getElementById('add-bookmark-form');
 
     addBookmarkBtn.addEventListener('click', () => {
-        // Pre-fill with current page URL if available
         const urlInput = document.getElementById('url-input');
         document.getElementById('bookmark-title').value = '';
         document.getElementById('bookmark-url').value = urlInput.value || '';
@@ -692,10 +717,25 @@ function initModals() {
         }
     });
 
+    // Confirm modal buttons
+    document.getElementById('confirm-cancel').addEventListener('click', () => {
+        pendingConfirmCallback = null;
+        document.getElementById('confirm-modal').classList.remove('visible');
+    });
+
+    document.getElementById('confirm-ok').addEventListener('click', () => {
+        if (pendingConfirmCallback) {
+            pendingConfirmCallback();
+            pendingConfirmCallback = null;
+        }
+        document.getElementById('confirm-modal').classList.remove('visible');
+    });
+
     // Close modal on Escape
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             document.querySelectorAll('.modal.visible').forEach(m => m.classList.remove('visible'));
+            pendingConfirmCallback = null;
         }
     });
 
@@ -704,9 +744,20 @@ function initModals() {
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
                 modal.classList.remove('visible');
+                pendingConfirmCallback = null;
             }
         });
     });
+}
+
+/**
+ * Show a custom confirm dialog (replaces native confirm())
+ */
+function showConfirmDialog(title, message, onConfirm) {
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    pendingConfirmCallback = onConfirm;
+    document.getElementById('confirm-modal').classList.add('visible');
 }
 
 // ============================================
@@ -792,12 +843,10 @@ function showToast(message, type = 'info') {
 
     container.appendChild(toast);
 
-    // Close button
     toast.querySelector('.toast-close').addEventListener('click', () => {
         dismissToast(toast);
     });
 
-    // Auto dismiss after 3 seconds
     setTimeout(() => {
         dismissToast(toast);
     }, 3000);
@@ -849,7 +898,6 @@ function renderBookmarks(bookmarks) {
         </div>
     `).join('');
 
-    // Add click handlers
     list.querySelectorAll('.bookmark-item').forEach(item => {
         item.addEventListener('click', (e) => {
             if (e.target.closest('.bookmark-delete')) {
@@ -927,7 +975,6 @@ function renderHistory(entries) {
         </div>
     `).join('');
 
-    // Add click handlers
     list.querySelectorAll('.history-item').forEach(item => {
         item.addEventListener('click', () => {
             navigate(item.dataset.url);

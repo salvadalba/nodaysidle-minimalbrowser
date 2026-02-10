@@ -35,20 +35,14 @@ let youtubeAdsBlocked = 0;
 // Structured ad patterns for optimized matching
 const AD_PATTERNS = {
   // Exact domain matches (O(1) lookup with Set)
+  // Includes base domains - we check if hostname ends with these
   domains: new Set([
     'doubleclick.net',
-    'ad.doubleclick.net',
-    'static.doubleclick.net',
     'googlesyndication.com',
-    'pagead2.googlesyndication.com',
-    'tpc.googlesyndication.com',
     'googleadservices.com',
-    'adservice.google.com',
     'google-analytics.com',
-    'ssl.google-analytics.com',
-    'analytics.google.com',
     'googletagmanager.com',
-    'www.googletagservices.com',
+    'googletagservices.com',
     'connect.facebook.net',
     'amazon-adsystem.com',
     'adsymptotic.com',
@@ -81,6 +75,7 @@ const AD_PATTERNS = {
     'bidswitch.net',
     'justpremium.com',
     'smartadserver.com',
+    'adservice.google.com',
   ]),
 
   // YouTube-specific patterns (checked only on youtube.com)
@@ -147,17 +142,29 @@ const AD_PATTERNS = {
 };
 
 /**
+ * Check if hostname matches any ad domain via suffix matching (true O(1))
+ * e.g. "pagead2.googlesyndication.com" matches "googlesyndication.com"
+ */
+function matchesDomain(hostname) {
+  const parts = hostname.split('.');
+  // Check progressively shorter suffixes: a.b.c.com -> b.c.com -> c.com
+  for (let i = 0; i < parts.length - 1; i++) {
+    const suffix = parts.slice(i).join('.');
+    if (AD_PATTERNS.domains.has(suffix)) return true;
+  }
+  return false;
+}
+
+/**
  * Check if URL matches ad patterns (optimized)
  */
 function isAdUrl(url, hostname) {
   const urlLower = url.toLowerCase();
   const hostLower = hostname.toLowerCase();
 
-  // 1. Check exact domain matches first (fastest - O(1))
-  for (const domain of AD_PATTERNS.domains) {
-    if (hostLower.includes(domain)) {
-      return { blocked: true, type: 'domain' };
-    }
+  // 1. Check exact domain matches first (fastest - O(1) Set lookup)
+  if (matchesDomain(hostLower)) {
+    return { blocked: true, type: 'domain' };
   }
 
   // 2. YouTube-specific patterns (only check on YouTube)
@@ -430,6 +437,28 @@ function setupTabViewListeners(tabId, view) {
   view.webContents.on('did-finish-load', () => {
     const url = view.webContents.getURL();
     injectYouTubeAdBlocker(view, url);
+
+    // Send back/forward state to renderer
+    if (mainWindow) {
+      mainWindow.webContents.send('nav-state-updated', tabId, {
+        canGoBack: view.webContents.canGoBack(),
+        canGoForward: view.webContents.canGoForward(),
+      });
+    }
+  });
+
+  // Handle navigation errors (DNS failures, SSL errors, timeouts)
+  view.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    // Ignore aborted loads (user navigated away) and cancelled loads
+    if (errorCode === -3 || errorCode === -1) return;
+
+    if (mainWindow) {
+      mainWindow.webContents.send('navigation-error', tabId, {
+        errorCode,
+        errorDescription,
+        url: validatedURL,
+      });
+    }
   });
 
   // Also inject on SPA navigation (YouTube is a SPA)
@@ -683,5 +712,17 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+// Close database cleanly on quit
+app.on('before-quit', () => {
+  if (db) {
+    try {
+      db.close();
+      console.log('Database closed');
+    } catch (e) {
+      console.error('Error closing database:', e);
+    }
   }
 });

@@ -1,6 +1,7 @@
 /**
  * Drift Browser - Database Module
  * SQLite database for bookmarks and history
+ * Prepared statements cached for performance
  */
 
 const Database = require('better-sqlite3');
@@ -19,10 +20,10 @@ class DriftDatabase {
     this.db.pragma('foreign_keys = ON');
 
     this.initTables();
+    this.prepareStatements();
   }
 
   initTables() {
-    // Bookmarks table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bookmarks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +37,6 @@ class DriftDatabase {
       )
     `);
 
-    // History table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +48,6 @@ class DriftDatabase {
       )
     `);
 
-    // Create indexes
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_history_url ON history(url);
       CREATE INDEX IF NOT EXISTS idx_history_last_visit ON history(last_visit DESC);
@@ -58,57 +57,82 @@ class DriftDatabase {
     console.log('Database tables initialized');
   }
 
+  /**
+   * Pre-compile all SQL statements once for performance
+   */
+  prepareStatements() {
+    // Bookmark statements
+    this._stmts = {
+      addBookmark: this.db.prepare(
+        'INSERT INTO bookmarks (title, url, parent_id, is_folder) VALUES (?, ?, ?, 0)'
+      ),
+      removeBookmark: this.db.prepare('DELETE FROM bookmarks WHERE id = ?'),
+      removeBookmarkByUrl: this.db.prepare('DELETE FROM bookmarks WHERE url = ?'),
+      isBookmarked: this.db.prepare(
+        'SELECT id FROM bookmarks WHERE url = ? AND is_folder = 0 LIMIT 1'
+      ),
+      getBookmarks: this.db.prepare(
+        'SELECT * FROM bookmarks WHERE parent_id IS ? ORDER BY position, created_at'
+      ),
+      getBookmarkById: this.db.prepare('SELECT * FROM bookmarks WHERE id = ?'),
+      createBookmarkFolder: this.db.prepare(
+        'INSERT INTO bookmarks (title, url, parent_id, is_folder) VALUES (?, NULL, ?, 1)'
+      ),
+
+      // History statements
+      getHistoryByUrl: this.db.prepare('SELECT * FROM history WHERE url = ?'),
+      updateVisit: this.db.prepare(
+        `UPDATE history SET visit_count = visit_count + 1,
+         last_visit = strftime('%s', 'now'), title = COALESCE(?, title) WHERE id = ?`
+      ),
+      insertVisit: this.db.prepare('INSERT INTO history (url, title) VALUES (?, ?)'),
+      getHistory: this.db.prepare(
+        'SELECT * FROM history ORDER BY last_visit DESC LIMIT ? OFFSET ?'
+      ),
+      getHistoryById: this.db.prepare('SELECT * FROM history WHERE id = ?'),
+      searchHistory: this.db.prepare(
+        'SELECT * FROM history WHERE url LIKE ? OR title LIKE ? ORDER BY last_visit DESC LIMIT 50'
+      ),
+      clearAllHistory: this.db.prepare('DELETE FROM history'),
+      clearHistoryBefore: this.db.prepare('DELETE FROM history WHERE last_visit < ?'),
+      deleteHistoryEntry: this.db.prepare('DELETE FROM history WHERE id = ?'),
+    };
+  }
+
   // ============================================
   // Bookmarks
   // ============================================
 
   addBookmark(title, url, parentId = null) {
-    const stmt = this.db.prepare(`
-      INSERT INTO bookmarks (title, url, parent_id, is_folder)
-      VALUES (?, ?, ?, 0)
-    `);
-    const result = stmt.run(title, url, parentId);
+    const result = this._stmts.addBookmark.run(title, url, parentId);
     return this.getBookmarkById(result.lastInsertRowid);
   }
 
   removeBookmark(id) {
-    const stmt = this.db.prepare('DELETE FROM bookmarks WHERE id = ?');
-    stmt.run(id);
+    this._stmts.removeBookmark.run(id);
     return true;
   }
 
   removeBookmarkByUrl(url) {
-    const stmt = this.db.prepare('DELETE FROM bookmarks WHERE url = ?');
-    const result = stmt.run(url);
+    const result = this._stmts.removeBookmarkByUrl.run(url);
     return result.changes > 0;
   }
 
   isBookmarked(url) {
-    const stmt = this.db.prepare('SELECT id FROM bookmarks WHERE url = ? AND is_folder = 0 LIMIT 1');
-    const result = stmt.get(url);
+    const result = this._stmts.isBookmarked.get(url);
     return result ? { bookmarked: true, id: result.id } : { bookmarked: false, id: null };
   }
 
   getBookmarks(parentId = null) {
-    const stmt = this.db.prepare(`
-      SELECT * FROM bookmarks
-      WHERE parent_id IS ?
-      ORDER BY position, created_at
-    `);
-    return stmt.all(parentId);
+    return this._stmts.getBookmarks.all(parentId);
   }
 
   getBookmarkById(id) {
-    const stmt = this.db.prepare('SELECT * FROM bookmarks WHERE id = ?');
-    return stmt.get(id);
+    return this._stmts.getBookmarkById.get(id);
   }
 
   createBookmarkFolder(title, parentId = null) {
-    const stmt = this.db.prepare(`
-      INSERT INTO bookmarks (title, url, parent_id, is_folder)
-      VALUES (?, NULL, ?, 1)
-    `);
-    const result = stmt.run(title, parentId);
+    const result = this._stmts.createBookmarkFolder.run(title, parentId);
     return this.getBookmarkById(result.lastInsertRowid);
   }
 
@@ -117,71 +141,42 @@ class DriftDatabase {
   // ============================================
 
   recordVisit(url, title = null) {
-    // Check if URL already exists
-    const existing = this.db.prepare('SELECT * FROM history WHERE url = ?').get(url);
+    const existing = this._stmts.getHistoryByUrl.get(url);
 
     if (existing) {
-      // Update existing entry
-      const stmt = this.db.prepare(`
-        UPDATE history
-        SET visit_count = visit_count + 1,
-            last_visit = strftime('%s', 'now'),
-            title = COALESCE(?, title)
-        WHERE id = ?
-      `);
-      stmt.run(title, existing.id);
-      return this.getHistoryById(existing.id);
+      this._stmts.updateVisit.run(title, existing.id);
+      return this._stmts.getHistoryById.get(existing.id);
     } else {
-      // Insert new entry
-      const stmt = this.db.prepare(`
-        INSERT INTO history (url, title)
-        VALUES (?, ?)
-      `);
-      const result = stmt.run(url, title);
-      return this.getHistoryById(result.lastInsertRowid);
+      const result = this._stmts.insertVisit.run(url, title);
+      return this._stmts.getHistoryById.get(result.lastInsertRowid);
     }
   }
 
   getHistory(limit = 100, offset = 0) {
-    const stmt = this.db.prepare(`
-      SELECT * FROM history
-      ORDER BY last_visit DESC
-      LIMIT ? OFFSET ?
-    `);
-    return stmt.all(limit, offset);
+    return this._stmts.getHistory.all(limit, offset);
   }
 
   getHistoryById(id) {
-    const stmt = this.db.prepare('SELECT * FROM history WHERE id = ?');
-    return stmt.get(id);
+    return this._stmts.getHistoryById.get(id);
   }
 
   searchHistory(query) {
-    const stmt = this.db.prepare(`
-      SELECT * FROM history
-      WHERE url LIKE ? OR title LIKE ?
-      ORDER BY last_visit DESC
-      LIMIT 50
-    `);
     const pattern = `%${query}%`;
-    return stmt.all(pattern, pattern);
+    return this._stmts.searchHistory.all(pattern, pattern);
   }
 
   clearHistory(beforeTimestamp = null) {
     if (beforeTimestamp) {
-      const stmt = this.db.prepare('DELETE FROM history WHERE last_visit < ?');
-      const result = stmt.run(beforeTimestamp);
+      const result = this._stmts.clearHistoryBefore.run(beforeTimestamp);
       return result.changes;
     } else {
-      const stmt = this.db.prepare('DELETE FROM history');
-      const result = stmt.run();
+      const result = this._stmts.clearAllHistory.run();
       return result.changes;
     }
   }
 
   deleteHistoryEntry(id) {
-    const stmt = this.db.prepare('DELETE FROM history WHERE id = ?');
-    stmt.run(id);
+    this._stmts.deleteHistoryEntry.run(id);
     return true;
   }
 
